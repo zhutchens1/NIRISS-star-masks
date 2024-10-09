@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 
 def dist_from_cent(xx,yy):
     return np.sqrt((xx-1500)**2. + (yy-1500)**2.)
@@ -29,6 +28,7 @@ def scaledfit(gmag):
     return cond*xx + (1-cond)*20
 
 if __name__=='__main__':
+    import matplotlib.pyplot as plt
     plt.figure()
     plt.plot(gband, radii, 'ko')
     plt.plot(gband, np.polyval(popt, gband), 'r-', label='true fit')
