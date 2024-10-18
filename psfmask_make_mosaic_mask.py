@@ -16,7 +16,6 @@ import cv2
 from tqdm import tqdm
 Gaia.ROW_LIMIT = int(1e6)
 
-
 def patch_circle(array, center, radius, value):
     """Patches a circle onto a 2D NumPy array.
 
@@ -53,15 +52,13 @@ def get_star_pa(wcslist, stars):
     for ii in range(0,len(stars)):
         for jj,wcs in enumerate(wcslist):
             if wcs.footprint_contains(SkyCoord(ra=stars['ra'][ii]*uu.degree, dec=stars['dec'][ii]*uu.degree, frame='icrs')):
-                #wcs_sorted.append(wcs)
                 pa[ii] = np.arctan2(headers[jj]['PC2_1'], headers[jj]['PC2_2'])*180/np.pi
             else:
                 # find which wcs is closest to the star and use its pa
                 sep = SkyCoord(ra=stars['ra'][ii]*uu.degree, dec=stars['dec'][ii]*uu.degree, frame='icrs').separation(centers)
                 closestidx = np.argmin(sep)
                 pa[ii] = np.arctan2(headers[closestidx]['PC2_1'], headers[closestidx]['PC2_2'])*180/np.pi
-                #wcs_sorted.append(wcslist[closestidx])
-    return -1*pa#, wcs_sorted
+    return -1*pa
 
 def make_star_mask(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30, inspect_final_mask=True):
     """
@@ -91,12 +88,8 @@ def make_star_mask(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth
     starscoord = SkyCoord(ra=stars['ra'], dec=stars['dec'], frame='icrs')
     in_image_idx = wcs.footprint_contains(starscoord)
     stars_in_image = stars[in_image_idx]
-    stars_in_image = stars_in_image[(stars_in_image['classprob_dsc_combmod_star']>0.9)]
+    stars_in_image = stars_in_image[(stars_in_image['classprob_dsc_combmod_star']>0.5)]
 
-
-
-    #angle,pa= get_rotation_angle(data)
-    #print(f"the angle is {angle} and the pa is {pa}")
     wcsdf = pd.read_csv(wcspath)
     wcs_exposures = [WCS(wcsdf.loc[ii].to_dict(), relax=True) for ii in wcsdf.index]
     pa_of_star = get_star_pa(wcs_exposures, stars_in_image)
@@ -120,7 +113,6 @@ def make_star_mask(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth
                 mask+=patch_rectangle(mask, pa_of_star[ii]+d_angle+spike_angle, height=0.5*diffspikeradius[ii], width=spikewidth,\
                         xcen=starxp[ii], ycen=staryp[ii], value=1)
     mask = (mask>0).astype(int)
-
     if inspect_final_mask:
         fig,axs=plt.subplots(ncols=3,figsize=(11,3))
         axs[0].imshow(mask)
@@ -142,12 +134,9 @@ if __name__=='__main__':
     root = '/Volumes/T7/data/mpia/mosaics/'
     #_=make_star_mask(root+'aqr-01-ir_drc_sci.fits', root+'aqr-01-f200wn-clear_wcs.csv', 'aqr-01.fits', inspect_final_mask=True)
     #_=make_star_mask(root+'boo-06-ir_drc_sci.fits', root+'boo-06-f200wn-clear_wcs.csv', 'boo-06.fits', inspect_final_mask=True)
+    #_=make_star_mask(root+'boo-05-ir_drc_sci.fits', root+'boo-05-f200wn-clear_wcs.csv', 'boo-05.fits', inspect_final_mask=True)
     #_=make_star_mask(root+'vir-12-ir_drc_sci.fits', root+'vir-12-f200wn-clear_wcs.csv', 'vir-12.fits', inspect_final_mask=True)
-    _=make_star_mask(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=True)
-    _=make_star_mask(root+'sex-09-ir_drc_sci.fits', root+'sex-09-f200wn-clear_wcs.csv', 'sex-09.fits', inspect_final_mask=True)
+    #_=make_star_mask(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=True)
+    #_=make_star_mask(root+'sex-09-ir_drc_sci.fits', root+'sex-09-f200wn-clear_wcs.csv', 'sex-09.fits', inspect_final_mask=True)
 
-
-    #_=make_star_mask('/Volumes/T7/boo-06-ir_drc_sci.fits', 'boo-06.fits', inspect_final_mask=True)
-    #_=make_star_mask('/Volumes/T7/vir-12-ir_drc_sci.fits', 'vir-12.fits', inspect_final_mask=True)
-    #_=make_star_mask('/Volumes/T7/uma-00-ir_drc_sci.fits', 'uma-00.fits', inspect_final_mask=True)
     print('done in {:0.2f} min'.format((time.time()-ti)/60))
