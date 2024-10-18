@@ -7,29 +7,15 @@ from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import skycoord_to_pixel
 from astropy.wcs import WCS
 import astropy.units as uu
+from astroquery.gaia import Gaia
 from reproject import reproject_interp
 from reproject.mosaicking import reproject_and_coadd
-from astroquery.gaia import Gaia
+from grizli.utils import log_scale_ds9
 import sizecal
 import cv2
 from tqdm import tqdm
 Gaia.ROW_LIMIT = int(1e6)
 
-from grizli.utils import log_scale_ds9
-
-def get_rotation_angle(image):
-    data = (image>0)
-    positions = np.array(np.where(data)).T
-    y0,x0 = np.sum(positions,axis=0)/positions.shape[0]
-    angle = np.arctan(y0/x0)*180/np.pi
-    boolimage = data.astype(int)
-    for ii in range(0,image.shape[0]):
-        if np.sum(boolimage[ii,:]==1):
-            x1 = np.where(boolimage[ii,:]==1)[0]
-    cond = (x1 > image.shape[1]/2)
-    #pa = (angle-90) if cond else (angle)
-    pa = angle if cond else (angle-90)
-    return angle,pa
 
 def patch_circle(array, center, radius, value):
     """Patches a circle onto a 2D NumPy array.
@@ -55,20 +41,29 @@ def patch_rectangle(image, PA, height, width, xcen, ycen, value):
     x2, y2 = x1 + height*np.cos(theta), y1 + height*np.sin(theta)
     x3, y3 = x2 - width*np.sin(theta), y2 + width*np.cos(theta)
     x4, y4 = x1 - width*np.sin(theta), y1 + width*np.cos(theta)
-    #slope = lambda x,y,xx,yy: (yy-y)/(xx-x)
-    #inte = lambda x, y, m: y-m*x
-    #line = lambda x,m,b : m*x + b
-    #slopeA,slopeB,slopeC,slopeD = slope(x1,y1,x2,y2),slope(x2,y2,x3,y3),slope(x3,y3,x4,y4),slope(x4,y4,x1,y1)
-    #intA, intB, intC, intD = inte(x1,y1,slopeA),inte(x2,y2,slopeB),inte(x3,y3,slopeC),inte(x4,y4,slopeD)
-    #ymesh, xmesh = np.mgrid[0:mask.shape[0], 0:mask.shape[1]]
-    #sel = ((ymesh>line(xmesh,slopeA,intA)) & (ymesh<line(xmesh,slopeB,intB)) & (ymesh<line(xmesh,slopeC,intC)) \
-    #        & (ymesh>line(xmesh,slopeD,intD)))
-    #mask[sel] = value
     corners = np.array([[x1,y1], [x2,y2], [x3,y3], [x4,y4]])
     cv2.fillPoly(mask, [corners.astype(np.int32)], value)
     return mask
 
-def make_star_mask(mosaic, output_path=None, hdulistindex=0, spikewidth=60, inspect_final_mask=True):
+def get_star_pa(wcslist, stars):
+    pa = np.zeros(len(stars))
+    headers = [ww.to_header(relax=True) for ww in wcslist]
+    centers=np.array([[hh['CRVAL1'],hh['CRVAL2']] for hh in headers])
+    centers=SkyCoord(ra=centers[:,0]*uu.degree, dec=centers[:,1]*uu.degree, frame='icrs')
+    for ii in range(0,len(stars)):
+        for jj,wcs in enumerate(wcslist):
+            if wcs.footprint_contains(SkyCoord(ra=stars['ra'][ii]*uu.degree, dec=stars['dec'][ii]*uu.degree, frame='icrs')):
+                #wcs_sorted.append(wcs)
+                pa[ii] = np.arctan2(headers[jj]['PC2_1'], headers[jj]['PC2_2'])*180/np.pi
+            else:
+                # find which wcs is closest to the star and use its pa
+                sep = SkyCoord(ra=stars['ra'][ii]*uu.degree, dec=stars['dec'][ii]*uu.degree, frame='icrs').separation(centers)
+                closestidx = np.argmin(sep)
+                pa[ii] = np.arctan2(headers[closestidx]['PC2_1'], headers[closestidx]['PC2_2'])*180/np.pi
+                #wcs_sorted.append(wcslist[closestidx])
+    return -1*pa#, wcs_sorted
+
+def make_star_mask(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30, inspect_final_mask=True):
     """
     Create a mask for an entire mosaic or image.
 
@@ -96,14 +91,20 @@ def make_star_mask(mosaic, output_path=None, hdulistindex=0, spikewidth=60, insp
     starscoord = SkyCoord(ra=stars['ra'], dec=stars['dec'], frame='icrs')
     in_image_idx = wcs.footprint_contains(starscoord)
     stars_in_image = stars[in_image_idx]
-    stars_in_image = stars_in_image[(stars_in_image['classprob_dsc_combmod_star']>0.5)]
+    stars_in_image = stars_in_image[(stars_in_image['classprob_dsc_combmod_star']>0.9)]
 
-    angle,pa= get_rotation_angle(data)
+
+
+    #angle,pa= get_rotation_angle(data)
+    #print(f"the angle is {angle} and the pa is {pa}")
+    wcsdf = pd.read_csv(wcspath)
+    wcs_exposures = [WCS(wcsdf.loc[ii].to_dict(), relax=True) for ii in wcsdf.index]
+    pa_of_star = get_star_pa(wcs_exposures, stars_in_image)
     diffspikeradius = np.round(np.array([sizecal.scaledfit(gg) for gg in stars_in_image['phot_g_mean_mag']]), 0)
-    circradius = np.round(0.2*diffspikeradius, 0)
+    circradius = np.round(0.1*diffspikeradius, 0)
     starxp, staryp = skycoord_to_pixel(SkyCoord(ra=stars_in_image['ra'], dec=stars_in_image['dec'], frame='icrs'), wcs=wcs)
-    mask = np.zeros_like(data)
 
+    mask = np.zeros_like(data)
     angle_variations = [-2,-1,0,1,2] # deg
     primary_spike_angles = [0,60,120,180,240,300]
     secondary_spike_angles = [90,270]
@@ -113,15 +114,15 @@ def make_star_mask(mosaic, output_path=None, hdulistindex=0, spikewidth=60, insp
         # make diffraction spikes
         for d_angle in angle_variations:
             for spike_angle in primary_spike_angles:
-                mask+=patch_rectangle(mask, pa+d_angle+spike_angle, height=2*diffspikeradius[ii], width=spikewidth,
+                mask+=patch_rectangle(mask, pa_of_star[ii]+d_angle+spike_angle, height=2*diffspikeradius[ii], width=spikewidth,
                         xcen=starxp[ii], ycen=staryp[ii], value=1)
             for spike_angle in secondary_spike_angles:
-                mask+=patch_rectangle(mask, pa+d_angle+spike_angle, height=diffspikeradius[ii], width=spikewidth,\
+                mask+=patch_rectangle(mask, pa_of_star[ii]+d_angle+spike_angle, height=0.5*diffspikeradius[ii], width=spikewidth,\
                         xcen=starxp[ii], ycen=staryp[ii], value=1)
     mask = (mask>0).astype(int)
 
     if inspect_final_mask:
-        fig,axs=plt.subplots(ncols=3)
+        fig,axs=plt.subplots(ncols=3,figsize=(11,3))
         axs[0].imshow(mask)
         axs[0].set_title("Star Mask")
         axs[1].imshow(log_scale_ds9(data))
@@ -129,6 +130,7 @@ def make_star_mask(mosaic, output_path=None, hdulistindex=0, spikewidth=60, insp
         axs[2].imshow(log_scale_ds9((1-mask)*data))
         axs[2].set_title("Masked Data")
         plt.tight_layout()
+        plt.savefig(output_path.replace('fits','png'),dpi=300)
         plt.show()
     if output_path is not None:
         fits.HDUList(fits.PrimaryHDU(data=mask, header=hdulist[hdulistindex].header)).writeto(output_path, overwrite=True)
@@ -137,30 +139,15 @@ def make_star_mask(mosaic, output_path=None, hdulistindex=0, spikewidth=60, insp
 if __name__=='__main__':
     import time
     ti=time.time()
-    _=make_star_mask('/Volumes/T7/outthere-hudfn-f200wn-clear_drc_sci.fits', './test.fits', inspect_final_mask=True)
-    print('done in {:0.2f} min'.format((time.time()-ti)/60))
+    root = '/Volumes/T7/data/mpia/mosaics/'
+    #_=make_star_mask(root+'aqr-01-ir_drc_sci.fits', root+'aqr-01-f200wn-clear_wcs.csv', 'aqr-01.fits', inspect_final_mask=True)
+    #_=make_star_mask(root+'boo-06-ir_drc_sci.fits', root+'boo-06-f200wn-clear_wcs.csv', 'boo-06.fits', inspect_final_mask=True)
+    #_=make_star_mask(root+'vir-12-ir_drc_sci.fits', root+'vir-12-f200wn-clear_wcs.csv', 'vir-12.fits', inspect_final_mask=True)
+    _=make_star_mask(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=True)
+    _=make_star_mask(root+'sex-09-ir_drc_sci.fits', root+'sex-09-f200wn-clear_wcs.csv', 'sex-09.fits', inspect_final_mask=True)
 
-"""
-def get_rotation_angle(image):
-    Gets angle of embedded image within np.array.
-    In input arrays, zeros represent regions outside embedded image
-    szy, szx = image.shape
-    boolimage = (image>0).astype(int)
-    x1, y1 = None, None
-    for ii in range(0,szy):
-        if np.sum(boolimage[ii,:]==1):
-            x1 = np.where(boolimage[ii,:]==1)[0]
-            break
-    for jj in range(0,szx):
-        if np.sum(boolimage[:,jj]==1):
-            y1 = np.where(boolimage[:,jj]==1)[0]
-            break
-    if (x1 is None) or (y1 is None):
-        print("warning: returning a rotation angle of zero, please check by eye!")
-        angle=0
-    elif (x1 < (szx/2)):
-        angle = 90 - (np.arctan2(y1, x1) * 180./np.pi)
-    else:
-        angle = -1*(np.arctan2(y1, x1) * 180./np.pi)
-    return angle
-"""
+
+    #_=make_star_mask('/Volumes/T7/boo-06-ir_drc_sci.fits', 'boo-06.fits', inspect_final_mask=True)
+    #_=make_star_mask('/Volumes/T7/vir-12-ir_drc_sci.fits', 'vir-12.fits', inspect_final_mask=True)
+    #_=make_star_mask('/Volumes/T7/uma-00-ir_drc_sci.fits', 'uma-00.fits', inspect_final_mask=True)
+    print('done in {:0.2f} min'.format((time.time()-ti)/60))
