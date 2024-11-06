@@ -2,6 +2,8 @@
 
 This Python library is designed to mask bright stars in JWST NIRISS imaging mosaics. Foreground stars are identified from the Gaia catalog using the `astroquery` library. The NIRISS stellar PSF is approximated using a toy model, represented by a circular region for the PSF's central componenets, and extended rectangles for the diffraction spikes. The library also includes helper functions to check if a given source is contaminated by a stellar PSF.
 
+The PSF is scaled for each object according to its Gaia G-band magnitude. The details of this calibration are included in `calibration.ipynb`.
+
 ## Functions
 The library's key functions include:
 
