@@ -25,7 +25,7 @@ def get_footprint(mosaic,wcsdf,hdulistindex):
 
     Parameters
     --------------------
-    mosaic : THDUList
+    mosaic : HDUList
         The mosaic FITS file.
     wcsdf : pd.DataFrame
         DataFrame containing WCS information.
@@ -172,7 +172,7 @@ def get_exposure_pa(wcslist, stars):
                 pa[ii] = np.arctan2(headers[closestidx]['PC2_1'], headers[closestidx]['PC2_2'])*180/np.pi
     return -1*pa
 
-def mask_exposure(data, circradius, diffspikeradius, spikewidth, starxp, staryp, pa_of_star, ncores=None):
+def mask_subexposure_within_mosaic(data, circradius, diffspikeradius, spikewidth, starxp, staryp, pa_of_star, ncores=None):
     """
     Create a mask for an exposure.
 
@@ -331,7 +331,7 @@ def mask_mosaic(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30
     uniquepas = np.unique(wcsdf.pa.to_list())
     masks = []
     for pa in tqdm(uniquepas,total=len(uniquepas)):
-        masks.append(mask_exposure(data,circradius,diffspikeradius,spikewidth,starxp,staryp,pa,ncores=ncores))
+        masks.append(mask_subexposure_within_mosaic(data,circradius,diffspikeradius,spikewidth,starxp,staryp,pa,ncores=ncores))
     masks = np.array(masks)
     masks = np.array([masks[np.where(uniquepas==pa)][0] for pa in wcsdf.pa.to_list()])
     mask = np.sum(masks * fps, axis=0)
