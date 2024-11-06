@@ -9,12 +9,8 @@ from astropy.wcs.utils import skycoord_to_pixel
 from astropy.wcs import WCS, FITSFixedWarning
 import astropy.units as uu
 from astroquery.gaia import Gaia
-from reproject import reproject_interp
-from reproject.mosaicking import reproject_and_coadd
 from grizli.utils import log_scale_ds9
-from scipy.ndimage import binary_fill_holes
 from pathos.multiprocessing import ProcessingPool 
-import sizecal
 import cv2
 import math
 from tqdm import tqdm
@@ -24,6 +20,24 @@ warnings.filterwarnings("ignore", category=FITSFixedWarning)
 Gaia.ROW_LIMIT = int(1e6)
 
 def get_footprint(mosaic,wcsdf,hdulistindex):
+    """
+    Generate a footprint for each exposure in the mosaic.
+
+    Parameters
+    --------------------
+    mosaic : THDUList
+        The mosaic FITS file.
+    wcsdf : pd.DataFrame
+        DataFrame containing WCS information.
+    hdulistindex : int
+        Index of the HDU in the mosaic.
+
+    Returns
+    --------------------
+    footprints : list
+        List of footprints for each exposure. Length
+        matches len(wcsdf).
+    """
     output_projection = WCS(mosaic[hdulistindex].header)
     shape_out = mosaic[hdulistindex].data.shape
     footprints=[]
@@ -43,6 +57,18 @@ def get_footprint(mosaic,wcsdf,hdulistindex):
     return footprints
 
 def fill_footprint_gaps(image):
+    """
+    Fill gaps in the footprint image.
+
+    Parameters
+    --------------------
+    image : ndarray
+        The footprint image.
+
+    Returns
+    --------------------
+    ndarray : The footprint image with gaps filled.
+    """
     for ii in range(0,image.shape[0]):
         zerosel = np.where(image[ii,:]==0)[0]
         onesel = np.where(image[ii,:]==1)[0]
@@ -54,12 +80,23 @@ def fill_footprint_gaps(image):
     return image
 
 def patch_circle(array, center, radius, value):
-    """Patches a circle onto a 2D NumPy array.
-    Args:
-        array (numpy.ndarray): The 2D array to modify.
-        center (tuple): The (x, y) coordinates of the circle's center.
-        radius (int): The radius of the circle.
-        value (float): The value to fill the circle with.
+    """
+    Patch a circle onto a 2D NumPy array.
+
+    Parameters
+    --------------------
+    array : ndarray
+        The 2D array to modify.
+    center : tuple
+        The (x, y) coordinates of the circle's center.
+    radius : int
+        The radius of the circle.
+    value : float
+        The value to fill the circle with.
+
+    Returns
+    --------------------
+    ndarray: The modified array with the circle patched.
     """
     x, y = np.ogrid[:array.shape[0], :array.shape[1]]
     mask = (x - center[0])**2 + (y - center[1])**2 <= radius**2
@@ -67,6 +104,30 @@ def patch_circle(array, center, radius, value):
     return array
 
 def patch_rectangle(image, PA, height, width, xcen, ycen, value):
+    """
+    Patch a rectangle onto a 2D image.
+
+    Parameters
+    --------------------
+    image : ndarray
+        The 2D array to modify.
+    PA : float
+        Position angle, in degrees, of the rectangle.
+    height : int
+        Height of the rectangle.
+    width : int
+        Width of the rectangle.
+    xcen : int
+        X-coordinate of the rectangle's center.
+    ycen : int
+        Y-coordinate of the rectangle's center.
+    value : float
+        The value to fill the rectangle with.
+
+    Returns
+    --------------------
+    ndarray: The modified array with the rectangle patched.
+    """
     mask = np.zeros(image.shape, dtype=np.uint8)
     theta = (90-PA)*math.pi/180.
     alpha = math.atan(width/height)
@@ -80,7 +141,23 @@ def patch_rectangle(image, PA, height, width, xcen, ycen, value):
     cv2.fillPoly(mask, [corners.astype(np.int32)], value)
     return mask
 
-def get_star_pa(wcslist, stars):
+def get_exposure_pa(wcslist, stars):
+    """
+    Get the position angles of exposures.
+
+    Parameters
+    --------------------
+    wcslist : list
+        List of WCS objects.
+    stars : pd.DataFrame
+        DataFrame containing star information.
+
+    Returns
+    --------------------
+    ndarray
+        Array of position angles for each exposure, length
+        matches wcslist.
+    """
     pa = np.zeros(len(stars))
     headers = [ww.to_header(relax=True) for ww in wcslist]
     centers=np.array([[hh['CRVAL1'],hh['CRVAL2']] for hh in headers])
@@ -90,7 +167,6 @@ def get_star_pa(wcslist, stars):
             if wcs.footprint_contains(SkyCoord(ra=stars['ra'][ii]*uu.degree, dec=stars['dec'][ii]*uu.degree, frame='icrs')):
                 pa[ii] = np.arctan2(headers[jj]['PC2_1'], headers[jj]['PC2_2'])*180/np.pi
             else:
-                # find which wcs is closest to the star and use its pa
                 sep = SkyCoord(ra=stars['ra'][ii]*uu.degree, dec=stars['dec'][ii]*uu.degree, frame='icrs').separation(centers)
                 closestidx = np.argmin(sep)
                 pa[ii] = np.arctan2(headers[closestidx]['PC2_1'], headers[closestidx]['PC2_2'])*180/np.pi
@@ -98,13 +174,32 @@ def get_star_pa(wcslist, stars):
 
 def mask_exposure(data, circradius, diffspikeradius, spikewidth, starxp, staryp, pa_of_star, ncores=None):
     """
-    data - image data as np.array
-    circradius - iterable, contains radius for which to mask each star
-    starxp - xpositions of stars
-    staryp - ypositions of stars
-    pa_of_star (scalar) - PA of exposure
+    Create a mask for an exposure.
 
-    returns: mask (1=star 0=no star)
+    Parameters
+    --------------------
+    data : ndarray
+        Image data.
+    circradius : iterable
+        Radius for masking each star.
+    diffspikeradius : iterable
+        Radii for diffraction spikes.
+    spikewidth : int
+        Width of the diffraction spikes.
+    starxp : ndarray
+        X-positions of stars.
+    staryp : ndarray
+        Y-positions of stars.
+    pa_of_star : float
+        Position angle of the exposure.
+    ncores : int, optional
+        Number of cores for multiprocessing.
+        If None (default), multiprocessing 
+        is not used.
+
+    Returns
+    --------------------
+    ndarray: Mask representing PSFs of bright stars.
     """
     mask = np.zeros_like(data)
     angle_variations = [-2,-1,0,1,2] # deg
@@ -112,39 +207,100 @@ def mask_exposure(data, circradius, diffspikeradius, spikewidth, starxp, staryp,
     secondary_spike_angles = [90,270]
     if ncores is None:
         for ii, radius in enumerate(circradius):
-            mask+=mask_individual_star(ii, mask, circradius, starxp, staryp, pa_of_star, angle_variations, primary_spike_angles, secondary_spike_angles, spikewidth, diffspikeradius)       
+            mask+=mask_individual_star(ii, mask, circradius, starxp, staryp, pa_of_star, angle_variations, primary_spike_angles, \
+                    secondary_spike_angles, spikewidth, diffspikeradius)       
     else:
         def worker_fn(ii):
-            return mask_individual_star(ii,mask, circradius, starxp, staryp, pa_of_star, angle_variations, primary_spike_angles, secondary_spike_angles, spikewidth, diffspikeradius)
+            return mask_individual_star(ii,mask, circradius, starxp, staryp, pa_of_star, angle_variations, primary_spike_angles, \
+                    secondary_spike_angles, spikewidth, diffspikeradius)
         pool=ProcessingPool(ncores)
         masks = pool.map(worker_fn, np.arange(circradius.shape[0]))
         mask = np.sum(masks,axis=0)
     return mask
 
-def mask_individual_star(ii, mask, circradius, starxp, staryp, pa_of_star, angle_variations, primary_spike_angles, secondary_spike_angles, spikewidth, diffspikeradius):
+def mask_individual_star(ii, mask, circradius, starxp, staryp, pa_of_exposure, angle_variations, primary_spike_angles, secondary_spike_angles, spikewidth, diffspikeradius):
+    """
+    Mask a star at a given position and PA using the NIRISS PSF, as set by user-specified size.
+    This function is written for a context in which many stars need to be masked, hence the index
+    `ii` and iterable arguments (e.g. starxp representing x positions for *all* stars) as inputs.
+    To mask a single star in a single image, use ii=0 and make all arguments length-1 iterables,
+    e.g. circradius = [5] rather than 5.
+
+    All angles should be supplied in degrees, and lengths/radii in units of pixels.
+
+    Parameters
+    --------------------
+    ii : int
+        index of star in array.
+    mask : ndarray
+        Image mask to modify.
+    circradius : iterable
+        radius of central PSF component (circle) to mask.
+    starxp : iterable
+        x position of star.
+    staryp : iterable
+        y position of star.
+    pa_of_exposure : scalar
+        PA of exposure.
+    angle_variations : iterable
+        variations on the PA to mask, to account for 
+        errors in centering/PA (e.g. [-1,0,1] degrees).
+    primary_spike_angles : iterable
+        angles of primary NIRISS PSF spikes.
+    secondary_spike_angles : iterables
+        angles of secondary NIRISS PSF spikes.
+    spikewidth : scalar
+        width of diffraction spikes within mask, pixels.
+    diffspikeradius : iterable
+        radial length of diffraction spike for the given star `ii`. Length matches `circradius`.
+
+    Returns
+    --------------------
+    ndarray : Modified mask with star at index `ii` masked.
+    """
     mask=patch_circle(mask, (staryp[ii], starxp[ii]), circradius[ii], 1)
     for d_angle in angle_variations:
         for spike_angle in primary_spike_angles:
-            mask+=patch_rectangle(mask, pa_of_star+d_angle+spike_angle, height=2*diffspikeradius[ii], width=spikewidth,
+            mask+=patch_rectangle(mask, pa_of_exposure+d_angle+spike_angle, height=2*diffspikeradius[ii], width=spikewidth,
                     xcen=starxp[ii], ycen=staryp[ii], value=1)
         for spike_angle in secondary_spike_angles:
-            mask+=patch_rectangle(mask, pa_of_star+d_angle+spike_angle, height=0.5*diffspikeradius[ii], width=spikewidth,\
+            mask+=patch_rectangle(mask, pa_of_exposure+d_angle+spike_angle, height=0.75*diffspikeradius[ii], width=spikewidth,\
                     xcen=starxp[ii], ycen=staryp[ii], value=1)
     return mask
 
-def mask_mosaic(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30, ncores=None, inspect_final_mask=True):
+def mask_mosaic(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30, ncores=None, inspect_final_mask=True,\
+    calibration_slope = -13.551, calibration_int = 342.216):
     """
-    Create a mask for an entire mosaic or image.
+    Create a mask for an entire NIRISS mosaic composed of different exposures.
 
-    Inputs:
-        output_path : str, path where mask should be saved to fits
-        mosaic : filepath, astropy.fits.HDUList
-        hdulistindex : int, index of relevant HDU in HDUList
-        spikewidth : width in pixels of masks for diffraction spikes
-        ncores : number of cores to use for multiprocessing (pathos)
-        inspect_final_mask : if True, the code displays the final mask for visual inspection.
-    Outputs:
-        mask : 1/0 mask representing the locations of bright stars
+    Parameters
+    ------------------
+    mosaic : str or HDUList
+        mosaic to mask. If str, it should represent a file path to a FITS image.
+    wcspath : str
+        path to WCS info file (WCS csv file generated by grizli).
+    output_path : str
+        path to save mosaic mask as FITS.
+    hdulistindex : int
+        Index in HDUList (`mosaic`) where data and header are located. Default 0.
+    spikewidth : int
+        Width of diffraction spikes in NIRISS PSF mask, in pixels. Default 30.
+    ncores : int
+        Number of cores for use in multiprocessing. If None, multiprocessing is
+        not used.
+    inspect_final_mask : bool
+        If True, the function will generate an image displaying the image and mask.
+    calibration_slope : float
+        Slope of calibration between PSF mask size and Gaia G-band magnitude.
+        Units = pixels/mag, default value derived in `calibration.ipynb`.
+    calibration_int : float
+        Intercept of calibration between PSF mask size and Gaia G-band magnitude.
+        Units = pixels, default value derived in `calibration.ipynb`.
+
+    Returns
+    ------------------
+    HDUList : astropy HDUList object containing the star mask. Matches the 
+        WCS of the original mosaic.
     """
     if isinstance(mosaic, str):
         hdulist = fits.open(mosaic)
@@ -163,9 +319,10 @@ def mask_mosaic(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30
     stars_in_image = stars_in_image[(stars_in_image['classprob_dsc_combmod_star']>0.5)]
     wcsdf = pd.read_csv(wcspath)
     wcs_exposures = [WCS(wcsdf.loc[ii].to_dict(), relax=True) for ii in wcsdf.index]
-    pa_of_star = get_star_pa(wcs_exposures, stars_in_image)
-    diffspikeradius = np.round(np.array([sizecal.scaledfit(gg) for gg in stars_in_image['phot_g_mean_mag']]), 0)
-    circradius = np.round(0.1*diffspikeradius, 0)
+    pa_of_star = get_exposure_pa(wcs_exposures, stars_in_image)
+    calibration = lambda gmag: calibration_slope*gmag + calibration_int
+    circradius = np.round(np.array([calibration(gg) for gg in stars_in_image['phot_g_mean_mag']]), 0)
+    diffspikeradius = (10*circradius).astype(int)
     starxp, staryp = skycoord_to_pixel(SkyCoord(ra=stars_in_image['ra'], dec=stars_in_image['dec'], frame='icrs'), wcs=wcs)
 
     wcsdf.loc[:,'pa'] = np.round(-1*np.arctan2(wcsdf['cd2_1'],wcsdf['cd2_2'])*180/np.pi) # nearest degree good enough.
@@ -182,11 +339,11 @@ def mask_mosaic(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30
     mask = fits.HDUList(fits.PrimaryHDU(data=mask, header=hdulist[hdulistindex].header))
     if inspect_final_mask:
         fig,axs=plt.subplots(ncols=3,figsize=(11,3))
-        axs[0].imshow(mask)
+        axs[0].imshow(mask[0].data)
         axs[0].set_title("Star Mask")
         axs[1].imshow(log_scale_ds9(data))
         axs[1].set_title("Original Data")
-        axs[2].imshow(log_scale_ds9((1-mask)*data))
+        axs[2].imshow(log_scale_ds9((1-mask[0].data)*data))
         axs[2].set_title("Masked Data")
         plt.tight_layout()
         plt.savefig(output_path.replace('fits','png'),dpi=300)
@@ -201,7 +358,7 @@ def is_object_contaminated(starmaskhdu, objectdata):
 
     Parameters
     ---------------
-    starmaskhdu : astropy.io.fits.HDUList object
+    starmaskhdu : HDUList object
         Star mask to check against. (1 = star, 0 = no star)
     objectdata : astropy.coordinates.SkyCoord object, astropy.io.fits.HDUList object, or iterable
         Objects to check if contaminated. If the input is a SkyCoord, the function assesses whether
@@ -228,13 +385,24 @@ def is_object_contaminated(starmaskhdu, objectdata):
     return (contaminated if (len(contaminated)>1) else contaminated[0])
 
 def _is_object_contaminated_skycoord(starmaskhdu, objectdata):
+    """
+    Check if a given source, described by a SkyCoord, is contaminated
+    by a stellar PSF. See `is_object_contaminated` for details.
+    """
     contaminated = np.zeros(len(objectdata)).astype(bool)
     maskwcs = WCS(starmaskhdu[0].header)
     for ii,object_ in enumerate(objectdata):
-        contaminated[ii] = bool(starmaskhdu[0].data[maskwcs.world_to_array_index(object_)])
+        if maskwcs.footprint_contains(object_):
+            contaminated[ii] = bool(starmaskhdu[0].data[maskwcs.world_to_array_index(object_)])
+        else:
+            contaminated[ii] = False
     return contaminated
 
 def _is_object_contaminated_hdulist(starmaskhdu, objectdata):
+    """
+    Check if a given source, described by an HDUList, is contaminated
+    by a stellar PSF. See `is_object_contaminated` for details.
+    """
     contaminated = np.zeros(len(objectdata)).astype(bool)
     maskwcs = WCS(starmaskhdu[0].header)
     for ii,object_ in enumerate(objectdata):
@@ -258,9 +426,9 @@ if __name__=='__main__':
     root = './'#/Volumes/T7/data/mpia/mosaics/'
     #_=mask_mosaic(root+'aqr-01-ir_drc_sci.fits', root+'aqr-01-f200wn-clear_wcs.csv', 'aqr-01.fits', inspect_final_mask=True)
     #_=mask_mosaic(root+'boo-06-ir_drc_sci.fits', root+'boo-06-f200wn-clear_wcs.csv', 'boo-06.fits', inspect_final_mask=True)
-    #_=mask_mosaic(root+'boo-05-ir_drc_sci.fits', root+'boo-05-f200wn-clear_wcs.csv', 'boo-05.fits', inspect_final_mask=True, ncores=ncpu)
+    _=mask_mosaic(root+'boo-05-ir_drc_sci.fits', root+'boo-05-f200wn-clear_wcs.csv', 'boo-05.fits', inspect_final_mask=True, ncores=ncpu)
     #_=mask_mosaic(root+'vir-12-ir_drc_sci.fits', root+'vir-12-f200wn-clear_wcs.csv', 'vir-12.fits', inspect_final_mask=True)
-    _=mask_mosaic(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=False, ncores=ncpu)
+    #_=mask_mosaic(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=True, ncores=ncpu)
     #_=mask_mosaic(root+'sex-09-ir_drc_sci.fits', root+'sex-09-f200wn-clear_wcs.csv', 'sex-09.fits', inspect_final_mask=True)
 
     print(is_object_contaminated(_,SkyCoord(ra=189.4192819*uu.degree, dec=62.2029112*uu.degree, frame='icrs')))
