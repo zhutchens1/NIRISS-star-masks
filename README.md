@@ -17,23 +17,9 @@ Generates a footprint for each exposure in the mosaic.
 - **Returns:**
   - `footprints` (list): List of footprints for each exposure.
 
-### `mask_exposure(data, circradius, diffspikeradius, spikewidth, starxp, staryp, pa_of_star, ncores=None)`
-Creates a mask for an exposure.
-
-- **Parameters:**
-  - `data` (ndarray): Image data.
-  - `circradius` (iterable): Radius for masking each star.
-  - `diffspikeradius` (iterable): Radii for diffraction spikes.
-  - `spikewidth` (int): Width of the diffraction spikes.
-  - `starxp` (ndarray): X-positions of stars.
-  - `staryp` (ndarray): Y-positions of stars.
-  - `pa_of_star` (float): Position angle of the exposure.
-  - `ncores` (int, optional): Number of cores for multiprocessing.
-- **Returns:**
-  - `ndarray`: Mask representing PSFs of bright stars.
-
 ### `mask_mosaic(mosaic, wcspath, output_path=None, hdulistindex=0, spikewidth=30, ncores=None, inspect_final_mask=True, calibration_slope=-13.551, calibration_int=342.216)`
 Creates a mask for an entire NIRISS mosaic composed of different exposures.
+Note this code also works for a single exposure; in this case, provide `wcsdf` as a one-row dataframe.
 
 - **Parameters:**
   - `mosaic` (str or HDUList): Mosaic to mask.
