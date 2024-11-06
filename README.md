@@ -39,7 +39,7 @@ Checks if a given source is contaminated by a stellar PSF.
 
 - **Parameters:**
   - `starmaskhdu` (HDUList): Star mask to check against.
-  - `objectdata` (SkyCoord or HDUList or iterable): Objects to check if contaminated.
+  - `objectdata` (SkyCoord, PrimaryHDU, ImageHDU or iterable of those types): Objects to check if contaminated.
 - **Returns:**
   - `bool or iterable of bool`: True/False indicating whether the object(s) is contaminated.
 

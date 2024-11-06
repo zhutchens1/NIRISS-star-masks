@@ -7,6 +7,7 @@ from astropy.nddata import NDData
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import skycoord_to_pixel
 from astropy.wcs import WCS, FITSFixedWarning
+from astropy.nddata import Cutout2D
 import astropy.units as uu
 from astroquery.gaia import Gaia
 from grizli.utils import log_scale_ds9
@@ -360,12 +361,15 @@ def is_object_contaminated(starmaskhdu, objectdata):
     ---------------
     starmaskhdu : HDUList object
         Star mask to check against. (1 = star, 0 = no star)
-    objectdata : astropy.coordinates.SkyCoord object, astropy.io.fits.HDUList object, or iterable
+    objectdata : astropy.coordinates.SkyCoord object, astropy.io.fits.ImageHDU or PrimaryHDU object, or iterable
         Objects to check if contaminated. If the input is a SkyCoord, the function assesses whether
         the star mask's value at the object's RA/Dec is 1 or 0. If passing an image, it should be a
         segmentation map, in which case the function will check for any overlap between the source
         and the star mask.
-        If iterable, elements must be SkyCoord or HDUList. 
+        If iterable, elements must be SkyCoord or HDUList.
+    extension : int or str
+        FITS extension in objectdata elements. Only used if passing image data, not SkyCoord.
+        Default 0.
 
     Returns
     --------------
@@ -376,12 +380,12 @@ def is_object_contaminated(starmaskhdu, objectdata):
         iter(objectdata)
     except TypeError:
         objectdata = [objectdata]
-    if isinstance(objectdata[0],fits.HDUList):
+    if isinstance(objectdata[0],fits.PrimaryHDU) or isinstance(objectdata[0],fits.ImageHDU):
         contaminated=_is_object_contaminated_hdulist(starmaskhdu, objectdata)
     elif isinstance(objectdata[0],SkyCoord):
         contaminated=_is_object_contaminated_skycoord(starmaskhdu, objectdata)
     else:
-        raise TypeError("`objectdata` must be (iterable of) astropy SkyCoord or HDUList, not type %s" % type(objectdata[0]))
+        raise TypeError("`objectdata` must be (iterable of) astropy SkyCoord or PrimaryHDU, not type %s" % type(objectdata[0]))
     return (contaminated if (len(contaminated)>1) else contaminated[0])
 
 def _is_object_contaminated_skycoord(starmaskhdu, objectdata):
@@ -406,12 +410,13 @@ def _is_object_contaminated_hdulist(starmaskhdu, objectdata):
     contaminated = np.zeros(len(objectdata)).astype(bool)
     maskwcs = WCS(starmaskhdu[0].header)
     for ii,object_ in enumerate(objectdata):
-        objhdr = object_[0].header
+        print(object_)
+        objhdr = object_.header
         XX,YY = np.meshgrid(np.arange(objhdr.get('naxis1')), np.arange(objhdr.get('naxis2')))
-        ra,dec = wcs.wcs_pix2world(XX, YY, 0)
-        objposition = SkyCoord(ra=np.mean(ra), dec=np.mean(dec), frame='icrs')
-        maskcutout = Cutout2D(starmaskhdu[0].data, position=objposition, size=object_[0].data.shape, wcs=maskwcs)
-        contaminated[ii] = bool(np.sum(object_[0].data * maskcutout[0].data) > 0)
+        ra,dec = WCS(objhdr).wcs_pix2world(XX, YY, 0)
+        objposition = SkyCoord(ra=np.mean(ra)*uu.degree, dec=np.mean(dec)*uu.degree, frame='icrs')
+        maskcutout = Cutout2D(starmaskhdu[0].data, position=objposition, size=object_.data.shape, wcs=maskwcs)
+        contaminated[ii] = bool(np.sum(object_.data * maskcutout.data) > 0)
     return contaminated
 
 #######################################################
@@ -426,13 +431,17 @@ if __name__=='__main__':
     root = './'#/Volumes/T7/data/mpia/mosaics/'
     #_=mask_mosaic(root+'aqr-01-ir_drc_sci.fits', root+'aqr-01-f200wn-clear_wcs.csv', 'aqr-01.fits', inspect_final_mask=True)
     #_=mask_mosaic(root+'boo-06-ir_drc_sci.fits', root+'boo-06-f200wn-clear_wcs.csv', 'boo-06.fits', inspect_final_mask=True)
-    _=mask_mosaic(root+'boo-05-ir_drc_sci.fits', root+'boo-05-f200wn-clear_wcs.csv', 'boo-05.fits', inspect_final_mask=True, ncores=ncpu)
+    #_=mask_mosaic(root+'boo-05-ir_drc_sci.fits', root+'boo-05-f200wn-clear_wcs.csv', 'boo-05.fits', inspect_final_mask=True, ncores=ncpu)
     #_=mask_mosaic(root+'vir-12-ir_drc_sci.fits', root+'vir-12-f200wn-clear_wcs.csv', 'vir-12.fits', inspect_final_mask=True)
-    #_=mask_mosaic(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=True, ncores=ncpu)
+    _=mask_mosaic(root+'uma-03-ir_drc_sci.fits', root+'uma-03-f200wn-clear_wcs.csv', 'uma-03.fits', inspect_final_mask=False, ncores=ncpu)
     #_=mask_mosaic(root+'sex-09-ir_drc_sci.fits', root+'sex-09-f200wn-clear_wcs.csv', 'sex-09.fits', inspect_final_mask=True)
 
-    print(is_object_contaminated(_,SkyCoord(ra=189.4192819*uu.degree, dec=62.2029112*uu.degree, frame='icrs')))
-    print(is_object_contaminated(_,SkyCoord(ra=189.3848905*uu.degree, dec=62.2253592*uu.degree, frame='icrs')))
-    print(is_object_contaminated(_,SkyCoord(ra=0*uu.degree,dec=0*uu.degree,frame='icrs')))
+    #print(is_object_contaminated(_,SkyCoord(ra=189.4192819*uu.degree, dec=62.2029112*uu.degree, frame='icrs')))
+    #print(is_object_contaminated(_,SkyCoord(ra=189.3848905*uu.degree, dec=62.2253592*uu.degree, frame='icrs')))
+    #print(is_object_contaminated(_,SkyCoord(ra=0*uu.degree,dec=0*uu.degree,frame='icrs')))
+
+    sourcehdu = fits.open('../data_outthere/dr0.1/all_source_data/data.outthere-survey.org/0.1/objects/fits/outthere-hudfn_36334.beams.fits')
+    print(sourcehdu['REF'])
+    print(is_object_contaminated(_,sourcehdu['REF']))
 
     print('done in {:0.2f} min'.format((time.time()-ti)/60))
