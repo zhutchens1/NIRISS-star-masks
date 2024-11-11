@@ -11,7 +11,7 @@ The library's key functions include:
 Generates a footprint for each exposure in the mosaic.
 
 - **Parameters:**
-  - `mosaic` (THDUList): The mosaic FITS file.
+  - `mosaic` (HDUList): The mosaic FITS file.
   - `wcsdf` (pd.DataFrame): DataFrame containing WCS information.
   - `hdulistindex` (int): Index of the HDU in the mosaic.
 - **Returns:**
